@@ -7,7 +7,7 @@ const path = require('path');
 
 // Configuración
 const VIRUSTOTAL_API_KEY = '2063838b3b3f8b6fe796203c289b68621b849db1bfdb525b5389249e4c9db469';
-const MAX_FILE_SIZE_MB = 32;
+const MAX_FILE_SIZE_MB = 32; // VirusTotal tiene límite de 32MB para la API gratuita
 
 // Inicializar cliente de WhatsApp
 const client = new Client({
@@ -22,8 +22,8 @@ const client = new Client({
 async function scanFile(filePath) {
     try {
         // Verificar tamaño del archivo
-        const stats = fs.statSync(filePath);
-        const fileSizeInMB = stats.size / (1024 * 1024);
+        const fileStats = fs.statSync(filePath);
+        const fileSizeInMB = fileStats.size / (1024 * 1024);
         
         if (fileSizeInMB > MAX_FILE_SIZE_MB) {
             throw new Error(`El archivo es demasiado grande (${fileSizeInMB.toFixed(2)}MB). El límite es ${MAX_FILE_SIZE_MB}MB.`);
@@ -64,7 +64,7 @@ async function scanFile(filePath) {
         );
 
         const report = reportResponse.data;
-        console.log('Respuesta completa de VirusTotal:', JSON.stringify(report, null, 2));
+        console.log('Respuesta de VirusTotal:', JSON.stringify(report, null, 2));
 
         // Verificar si la respuesta tiene la estructura esperada
         if (!report.data || !report.data.attributes || !report.data.attributes.stats) {
@@ -72,7 +72,8 @@ async function scanFile(filePath) {
         }
 
         const stats = report.data.attributes.stats;
-        const totalEngines = (stats.harmless || 0) + (stats.malicious || 0) + (stats.suspicious || 0) + (stats.undetected || 0);
+        const totalEngines = (stats.harmless || 0) + (stats.malicious || 0) + 
+                           (stats.suspicious || 0) + (stats.undetected || 0);
         const malicious = stats.malicious || 0;
         const sha256 = report.data.attributes.sha256;
         const permalink = sha256 ? `https://www.virustotal.com/gui/file/${sha256}/detection` : 'No disponible';
@@ -84,12 +85,12 @@ async function scanFile(filePath) {
             permalink
         };
     } catch (error) {
-        console.error('Error detallado al escanear con VirusTotal:', error.response?.data || error.message);
+        console.error('Error al escanear con VirusTotal:', error.response?.data || error.message);
         throw error;
     }
 }
 
-// Eventos de WhatsApp (igual que antes)
+// Eventos de WhatsApp
 client.on('qr', qr => {
     qrcode.generate(qr, { small: true });
 });
@@ -127,10 +128,20 @@ client.on('message', async msg => {
             
             fs.unlinkSync(filePath);
         } catch (error) {
-            console.error('Error completo al procesar el archivo:', error);
+            console.error('Error al procesar el archivo:', error);
             await msg.reply(`❌ Error al analizar el archivo: ${error.message}`);
         }
     }
 });
 
+// Manejo de errores globales
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('Uncaught Exception:', error);
+});
+
+// Iniciar el cliente
 client.initialize();
