@@ -8,7 +8,7 @@ const path = require('path');
 // Configuración
 const VIRUSTOTAL_API_KEY = '2063838b3b3f8b6fe796203c289b68621b849db1bfdb525b5389249e4c9db469';
 const MAX_FILE_SIZE_MB = 32;
-const ACTIVATION_WORDS = ['revisar', 'scan', 'analizar', 'check', 'review', 'escanear']; // Palabras clave
+const ACTIVATION_WORDS = ['revisar', 'scan', 'analizar', 'check', 'review', 'escanear'];
 
 // Inicializar cliente de WhatsApp
 const client = new Client({
@@ -19,24 +19,32 @@ const client = new Client({
     }
 });
 
-// Resto del código de scanFile() permanece igual...
+// Función para escanear archivos (se mantiene igual)
 async function scanFile(filePath) {
-    // ... (el mismo código de scanFile que teníamos antes)
+    // ... (código existente de scanFile)
 }
 
-// Modificamos el evento 'message' para incluir la verificación de palabras clave
+client.on('qr', qr => {
+    qrcode.generate(qr, { small: true });
+});
+
+client.on('ready', () => {
+    console.log('Client is ready!');
+});
+
 client.on('message', async msg => {
-    // Verificar si el mensaje contiene alguna palabra clave (ignorando mayúsculas/minúsculas)
+    // Verificar si el mensaje contiene palabra clave
     const hasActivationWord = ACTIVATION_WORDS.some(word => 
         msg.body.toLowerCase().includes(word.toLowerCase())
     );
 
+    // Solo responder si tiene archivo Y palabra clave
     if (msg.hasMedia && hasActivationWord) {
         try {
-            await msg.reply('🔍 Recibí tu solicitud de análisis, procesando archivo...');
+            await msg.reply('🔍 Analizando archivo, por favor espera...');
             
             const media = await msg.downloadMedia();
-            const filePath = path.join(__dirname, 'temp_files', `${msg.id.timestamp}_${msg.id.id}.tmp`);
+            const filePath = path.join(__dirname, 'temp_files', `${Date.now()}_${msg.id.id}.tmp`);
             
             if (!fs.existsSync(path.dirname(filePath))) {
                 fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -62,19 +70,8 @@ client.on('message', async msg => {
             console.error('Error al procesar el archivo:', error);
             await msg.reply(`❌ Error al analizar el archivo: ${error.message}`);
         }
-    } else if (msg.hasMedia) {
-        // Si tiene archivo pero no palabra clave
-        await msg.reply('ℹ️ Recibí un archivo. Si deseas que lo analice, incluye palabras como "revisar", "analizar" o "scan" en tu mensaje.');
     }
-});
-
-// Resto del código (eventos qr, ready, etc.) permanece igual...
-client.on('qr', qr => {
-    qrcode.generate(qr, { small: true });
-});
-
-client.on('ready', () => {
-    console.log('Client is ready!');
+    // No hacer nada en otros casos (mensajes sin palabras clave)
 });
 
 client.initialize();
