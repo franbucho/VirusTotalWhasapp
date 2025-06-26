@@ -1,6 +1,6 @@
 require('dotenv').config();
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
+const qrcode = require('qrcode-terminal'); // Todavía lo necesitamos para generar el QR data
 const axios = require('axios');
 const FormData = require('form-data');
 const fs = require('fs');
@@ -14,6 +14,12 @@ const VIRUSTOTAL_API_KEY = process.env.VT_API_KEY;
 const MAX_FILE_SIZE_MB = 32;
 const ACTIVATION_WORDS = ['revisar', 'scan', 'analizar', 'check', 'review', 'escanear'];
 const RECONNECT_DELAY = 10000; // 10 segundos entre reconexiones
+
+// --- CAMBIO AQUÍ: Definimos el número de administrador para recibir el QR ---
+const ADMIN_WA_NUMBER = '12128378524@c.us'; // Tu número de WhatsApp, con código de país y @c.us
+// Puedes dejarlo como variable de entorno si prefieres: process.env.ADMIN_WA_NUMBER;
+// En ese caso, asegúrate de configurarlo en Render.
+// -----------------------------------------------------------------------
 
 // Inicializar WhatsApp Client
 const client = new Client({
@@ -55,14 +61,35 @@ function initializeClient() {
     });
 }
 
+// --- CAMBIO AQUÍ: Función para enviar el enlace QR ---
+async function sendQrLinkToAdmin(qrData) {
+    if (!ADMIN_WA_NUMBER) {
+        console.warn("ADMIN_WA_NUMBER no está configurado. No se enviará el enlace del QR.");
+        return;
+    }
+
+    // Generar la URL del QR de Google Charts
+    const qrImageUrl = `https://chart.googleapis.com/chart?cht=qr&chs=300x300&chl=${encodeURIComponent(qrData)}`;
+
+    try {
+        // Enviar el enlace del QR directamente al número del administrador
+        await client.sendMessage(ADMIN_WA_NUMBER, `Por favor, escanea este QR para autenticar el bot:\n${qrImageUrl}\n\n(Este enlace es válido por un tiempo limitado. Si expira, el bot se reiniciará para generar uno nuevo)`);
+        console.log(`Enviado enlace QR a ${ADMIN_WA_NUMBER}`);
+    } catch (error) {
+        console.error(`Error al enviar el enlace QR a ${ADMIN_WA_NUMBER}:`, error);
+        // Si falla enviar el mensaje, al menos imprímelo en el log para verlo manualmente
+        console.log(`Fallback: QR Image URL for manual scan: ${qrImageUrl}`);
+    }
+}
+// ---------------------------------------------------
+
 // Función para escanear archivos con VirusTotal
 async function scanFile(filePath) {
     try {
         if (!fs.existsSync(filePath)) throw new Error('Archivo temporal no existe');
         
-        // CAMBIO AQUÍ: Renombramos 'stats' a 'fileStats'
         const fileStats = fs.statSync(filePath); 
-        const fileSizeMB = fileStats.size / (1024 * 1024); // Usamos fileStats
+        const fileSizeMB = fileStats.size / (1024 * 1024); 
         if (fileSizeMB > MAX_FILE_SIZE_MB) throw new Error(`Archivo demasiado grande (${fileSizeMB.toFixed(2)}MB)`);
 
         const formData = new FormData();
@@ -99,7 +126,7 @@ async function scanFile(filePath) {
             throw new Error('Estructura de respuesta inválida');
         }
 
-        const { stats } = report.data.attributes; // Esta es la línea 101 original, ahora no hay conflicto.
+        const { stats } = report.data.attributes; 
         const totalEngines = Object.values(stats).reduce((sum, val) => sum + (val || 0), 0);
         const malicious = stats.malicious || 0;
         const sha256 = report.data.attributes.sha256 || '';
@@ -107,7 +134,7 @@ async function scanFile(filePath) {
         return {
             malicious,
             totalEngines,
-            stats, // Devolvemos las estadísticas de VirusTotal
+            stats, 
             permalink: sha256 ? `https://www.virustotal.com/gui/file/${sha256}/detection` : 'No disponible'
         };
     } catch (error) {
@@ -123,8 +150,10 @@ async function scanFile(filePath) {
 }
 
 // Eventos de WhatsApp
-client.on('qr', qr => {
-    qrcode.generate(qr, { small: true });
+client.on('qr', async qr => { // Marcado como async para usar await
+    // Ya no usamos qrcode.generate(qr, { small: true });
+    console.log('QR data generado. Intentando enviar como enlace...');
+    await sendQrLinkToAdmin(qr); // Llamamos a la nueva función
 });
 
 client.on('authenticated', () => {
@@ -139,7 +168,6 @@ client.on('disconnected', (reason) => {
     console.log(`⚠️ Sesión desconectada: ${reason}`);
     console.log(`Reconectando en ${RECONNECT_DELAY/1000} segundos...`);
     
-    // Forzar reinicio limpio
     try {
         client.destroy();
     } catch (e) {
