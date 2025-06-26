@@ -60,8 +60,9 @@ async function scanFile(filePath) {
     try {
         if (!fs.existsSync(filePath)) throw new Error('Archivo temporal no existe');
         
-        const stats = fs.statSync(filePath);
-        const fileSizeMB = stats.size / (1024 * 1024);
+        // CAMBIO AQUÍ: Renombramos 'stats' a 'fileStats'
+        const fileStats = fs.statSync(filePath); 
+        const fileSizeMB = fileStats.size / (1024 * 1024); // Usamos fileStats
         if (fileSizeMB > MAX_FILE_SIZE_MB) throw new Error(`Archivo demasiado grande (${fileSizeMB.toFixed(2)}MB)`);
 
         const formData = new FormData();
@@ -98,7 +99,7 @@ async function scanFile(filePath) {
             throw new Error('Estructura de respuesta inválida');
         }
 
-        const { stats } = report.data.attributes;
+        const { stats } = report.data.attributes; // Esta es la línea 101 original, ahora no hay conflicto.
         const totalEngines = Object.values(stats).reduce((sum, val) => sum + (val || 0), 0);
         const malicious = stats.malicious || 0;
         const sha256 = report.data.attributes.sha256 || '';
@@ -106,7 +107,7 @@ async function scanFile(filePath) {
         return {
             malicious,
             totalEngines,
-            stats,
+            stats, // Devolvemos las estadísticas de VirusTotal
             permalink: sha256 ? `https://www.virustotal.com/gui/file/${sha256}/detection` : 'No disponible'
         };
     } catch (error) {
