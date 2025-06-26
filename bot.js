@@ -10,14 +10,15 @@ const express = require('express');
 // Configuración
 const app = express();
 const PORT = process.env.PORT || 3000;
-const VIRUSTOTAL_API_KEY = process.env.VT_API_KEY || 'tu-api-key'; // Usa variables de entorno
+const VIRUSTOTAL_API_KEY = process.env.VT_API_KEY;
 const MAX_FILE_SIZE_MB = 32;
 const ACTIVATION_WORDS = ['revisar', 'scan', 'analizar', 'check', 'review', 'escanear'];
+const RECONNECT_DELAY = 10000; // 10 segundos entre reconexiones
 
 // Inicializar WhatsApp Client
 const client = new Client({
     authStrategy: new LocalAuth({
-        dataPath: path.join(__dirname, 'session_data') // Guarda sesiones persistentes
+        dataPath: path.join(__dirname, 'session_data')
     }),
     puppeteer: {
         headless: true,
@@ -26,15 +27,19 @@ const client = new Client({
             '--disable-setuid-sandbox',
             '--disable-dev-shm-usage'
         ]
-    }
+    },
+    takeoverOnConflict: true, // Forzar toma de control de sesión
+    restartOnAuthFail: true   // Reiniciar si falla la autenticación
 });
 
 // Servidor web para health checks
 app.get('/', (req, res) => {
+    const status = client.info ? 'connected' : 'disconnected';
     res.status(200).json({
-        status: 'online',
+        status: status,
         service: 'WhatsApp VirusTotal Bot',
-        uptime: process.uptime()
+        uptime: process.uptime(),
+        session: client.info || null
     });
 });
 
@@ -42,17 +47,23 @@ app.listen(PORT, () => {
     console.log(`Servidor health check en puerto ${PORT}`);
 });
 
+// Función para reconexión automática
+function initializeClient() {
+    client.initialize().catch(err => {
+        console.error('Error al iniciar cliente:', err);
+        setTimeout(initializeClient, RECONNECT_DELAY);
+    });
+}
+
 // Función para escanear archivos con VirusTotal
 async function scanFile(filePath) {
     try {
-        // Validación del archivo
         if (!fs.existsSync(filePath)) throw new Error('Archivo temporal no existe');
         
         const stats = fs.statSync(filePath);
         const fileSizeMB = stats.size / (1024 * 1024);
         if (fileSizeMB > MAX_FILE_SIZE_MB) throw new Error(`Archivo demasiado grande (${fileSizeMB.toFixed(2)}MB)`);
 
-        // Subir a VirusTotal
         const formData = new FormData();
         formData.append('file', fs.createReadStream(filePath));
 
@@ -72,9 +83,8 @@ async function scanFile(filePath) {
         if (!analysisId) throw new Error('No se obtuvo ID de análisis');
 
         console.log(`Archivo subido. ID: ${analysisId}`);
-        await new Promise(resolve => setTimeout(resolve, 30000)); // Espera 30 segundos
+        await new Promise(resolve => setTimeout(resolve, 30000));
 
-        // Obtener resultados
         const reportResponse = await axios.get(
             `https://www.virustotal.com/api/v3/analyses/${analysisId}`,
             {
@@ -121,13 +131,21 @@ client.on('authenticated', () => {
 });
 
 client.on('ready', () => {
-    console.log('Bot listo 🚀');
+    console.log('Bot listo 🚀 | Sesión:', client.info);
 });
 
 client.on('disconnected', (reason) => {
-    console.log('Desconectado:', reason);
-    console.log('Reiniciando...');
-    client.initialize();
+    console.log(`⚠️ Sesión desconectada: ${reason}`);
+    console.log(`Reconectando en ${RECONNECT_DELAY/1000} segundos...`);
+    
+    // Forzar reinicio limpio
+    try {
+        client.destroy();
+    } catch (e) {
+        console.error('Error al destruir cliente:', e);
+    }
+    
+    setTimeout(initializeClient, RECONNECT_DELAY);
 });
 
 client.on('message', async msg => {
@@ -142,7 +160,6 @@ client.on('message', async msg => {
         const media = await msg.downloadMedia();
         const filePath = path.join(__dirname, 'temp', `${Date.now()}_${msg.id.id}.tmp`);
 
-        // Asegurar directorio temporal
         if (!fs.existsSync(path.dirname(filePath))) {
             fs.mkdirSync(path.dirname(filePath), { recursive: true });
         }
@@ -164,8 +181,8 @@ client.on('message', async msg => {
     }
 });
 
-// Iniciar
-client.initialize();
+// Iniciar cliente
+initializeClient();
 
 // Manejo de errores globales
 process.on('unhandledRejection', (err) => {
@@ -174,4 +191,5 @@ process.on('unhandledRejection', (err) => {
 
 process.on('uncaughtException', (err) => {
     console.error('Uncaught Exception:', err);
+    setTimeout(initializeClient, RECONNECT_DELAY);
 });
