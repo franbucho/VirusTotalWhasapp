@@ -58,7 +58,7 @@ function initializeClient() {
     });
 }
 
-// --- FUNCIÓN `scanFile` CORREGIDA CON POLLING ---
+// Función `scanFile` corregida con polling y parseo correcto
 async function scanFile(filePath) {
     try {
         if (!fs.existsSync(filePath)) {
@@ -91,8 +91,8 @@ async function scanFile(filePath) {
         console.log(`Archivo subido. ID de análisis: ${analysisId}. Esperando resultados...`);
 
         // 2. Hacer "polling" para esperar el resultado final
-        const maxRetries = 10; // Intentaremos 10 veces máximo
-        const retryDelay = 20000; // Esperaremos 20 segundos entre intentos
+        const maxRetries = 10;
+        const retryDelay = 20000;
 
         for (let i = 0; i < maxRetries; i++) {
             console.log(`Intento ${i + 1}/${maxRetries}: Consultando el reporte...`);
@@ -104,12 +104,13 @@ async function scanFile(filePath) {
                 }
             );
 
-            const status = reportResponse.data?.data?.attributes?.status;
+            const reportData = reportResponse.data.data;
+            const status = reportData.attributes.status;
+
             if (status === 'completed') {
                 console.log('¡Análisis completado!');
-                const report = reportResponse.data;
-                const stats = report.data.attributes.stats;
-                const sha256 = report.data.meta.file_info.sha256;
+                const stats = reportData.attributes.stats;
+                const sha256 = reportResponse.data.meta.file_info.sha256;
                 const totalEngines = Object.values(stats).reduce((sum, val) => sum + (val || 0), 0);
                 const malicious = stats.malicious || 0;
 
