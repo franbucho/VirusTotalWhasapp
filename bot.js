@@ -27,7 +27,8 @@ const client = new Client({
             '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
             '--disable-gpu'
-        ]
+        ],
+        timeout: 0 // <--- CORRECCIÓN FINAL: Añadido para evitar timeouts en Render
     },
     takeoverOnConflict: true,
     restartOnAuthFail: true
@@ -89,10 +90,7 @@ client.on('disconnected', (reason) => {
     setTimeout(initializeClient, RECONNECT_DELAY);
 });
 
-// El resto de tu código (scanFile, client.on('message'), etc.) no necesita cambios
-// ... (puedes pegar el resto de tu lógica de `scanFile` y `client.on('message')` aquí si la has modificado,
-// pero la versión que me pasaste antes funcionará bien con este encabezado)
-
+// Función para escanear archivos con VirusTotal
 async function scanFile(filePath) {
     try {
         if (!fs.existsSync(filePath)) throw new Error('Archivo temporal no existe');
@@ -122,7 +120,8 @@ async function scanFile(filePath) {
         const report = reportResponse.data;
         if (!report?.data?.attributes?.stats) throw new Error('Estructura de respuesta de VirusTotal inválida');
 
-        const { stats, sha256 } = report.data.attributes;
+        const { stats } = report.data.attributes;
+        const sha256 = report.data.attributes.sha256 || '';
         const totalEngines = Object.values(stats).reduce((sum, val) => sum + (val || 0), 0);
         const malicious = stats.malicious || 0;
 
@@ -151,6 +150,7 @@ async function scanFile(filePath) {
     }
 }
 
+// Evento para procesar mensajes
 client.on('message', async msg => {
     try {
         const hasActivationWord = ACTIVATION_WORDS.some(word => msg.body.toLowerCase().includes(word.toLowerCase()));
@@ -188,8 +188,10 @@ client.on('message', async msg => {
     }
 });
 
+// Iniciar el cliente de WhatsApp
 initializeClient();
 
+// Manejo de errores globales
 process.on('unhandledRejection', (reason, promise) => {
     console.error('🚨 Unhandled Rejection at:', promise, 'reason:', reason);
 });
