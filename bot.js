@@ -28,7 +28,7 @@ const client = new Client({
             '--disable-dev-shm-usage',
             '--disable-gpu'
         ],
-        timeout: 0 // <--- CORRECCIÓN FINAL: Añadido para evitar timeouts en Render
+        timeout: 0
     },
     takeoverOnConflict: true,
     restartOnAuthFail: true
@@ -56,6 +56,93 @@ function initializeClient() {
         console.log(`Reintentando iniciar cliente en ${RECONNECT_DELAY / 1000} segundos...`);
         setTimeout(initializeClient, RECONNECT_DELAY);
     });
+}
+
+// --- FUNCIÓN `scanFile` CORREGIDA CON POLLING ---
+async function scanFile(filePath) {
+    try {
+        if (!fs.existsSync(filePath)) {
+            throw new Error('Archivo temporal no existe');
+        }
+        
+        const fileStats = fs.statSync(filePath);
+        const fileSizeMB = fileStats.size / (1024 * 1024);
+        if (fileSizeMB > MAX_FILE_SIZE_MB) {
+            throw new Error(`Archivo demasiado grande (${fileSizeMB.toFixed(2)}MB). Máximo permitido: ${MAX_FILE_SIZE_MB}MB`);
+        }
+
+        const formData = new FormData();
+        formData.append('file', fs.createReadStream(filePath));
+
+        // 1. Subir el archivo y obtener el ID de análisis
+        const uploadResponse = await axios.post(
+            'https://www.virustotal.com/api/v3/files',
+            formData,
+            {
+                headers: { 'x-apikey': VIRUSTOTAL_API_KEY, ...formData.getHeaders() },
+                timeout: 60000
+            }
+        );
+
+        const analysisId = uploadResponse.data?.data?.id;
+        if (!analysisId) {
+            throw new Error('No se obtuvo ID de análisis de VirusTotal');
+        }
+        console.log(`Archivo subido. ID de análisis: ${analysisId}. Esperando resultados...`);
+
+        // 2. Hacer "polling" para esperar el resultado final
+        const maxRetries = 10; // Intentaremos 10 veces máximo
+        const retryDelay = 20000; // Esperaremos 20 segundos entre intentos
+
+        for (let i = 0; i < maxRetries; i++) {
+            console.log(`Intento ${i + 1}/${maxRetries}: Consultando el reporte...`);
+            const reportResponse = await axios.get(
+                `https://www.virustotal.com/api/v3/analyses/${analysisId}`,
+                {
+                    headers: { 'x-apikey': VIRUSTOTAL_API_KEY },
+                    timeout: 30000
+                }
+            );
+
+            const status = reportResponse.data?.data?.attributes?.status;
+            if (status === 'completed') {
+                console.log('¡Análisis completado!');
+                const report = reportResponse.data;
+                const stats = report.data.attributes.stats;
+                const sha256 = report.data.meta.file_info.sha256;
+                const totalEngines = Object.values(stats).reduce((sum, val) => sum + (val || 0), 0);
+                const malicious = stats.malicious || 0;
+
+                return {
+                    malicious,
+                    totalEngines,
+                    permalink: `https://www.virustotal.com/gui/file/${sha256}/detection`
+                };
+            }
+
+            console.log(`El estado del análisis es '${status}'. Esperando ${retryDelay / 1000} segundos...`);
+            await new Promise(resolve => setTimeout(resolve, retryDelay));
+        }
+
+        throw new Error('El análisis de VirusTotal tardó demasiado en completarse.');
+
+    } catch (error) {
+        if (axios.isAxiosError(error)) {
+            console.error('Error de Axios en scanFile:', error.response?.status, error.response?.data || error.message);
+            throw new Error(`Fallo en el análisis de VirusTotal: ${error.response?.data?.error?.message || error.message}`);
+        }
+        console.error('Error general en scanFile:', error.message);
+        throw new Error(`Fallo en el análisis: ${error.message}`);
+    } finally {
+        try {
+            if (filePath && fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath);
+                console.log(`Archivo temporal ${path.basename(filePath)} eliminado.`);
+            }
+        } catch (e) {
+            console.error('Error eliminando archivo temporal:', e);
+        }
+    }
 }
 
 // Eventos del cliente de WhatsApp
@@ -90,73 +177,13 @@ client.on('disconnected', (reason) => {
     setTimeout(initializeClient, RECONNECT_DELAY);
 });
 
-// Función para escanear archivos con VirusTotal
-async function scanFile(filePath) {
-    try {
-        if (!fs.existsSync(filePath)) throw new Error('Archivo temporal no existe');
-        const fileStats = fs.statSync(filePath);
-        const fileSizeMB = fileStats.size / (1024 * 1024);
-        if (fileSizeMB > MAX_FILE_SIZE_MB) throw new Error(`Archivo demasiado grande (${fileSizeMB.toFixed(2)}MB). Máximo permitido: ${MAX_FILE_SIZE_MB}MB`);
-
-        const formData = new FormData();
-        formData.append('file', fs.createReadStream(filePath));
-
-        const uploadResponse = await axios.post('https://www.virustotal.com/api/v3/files', formData, {
-            headers: { 'x-apikey': VIRUSTOTAL_API_KEY, ...formData.getHeaders() },
-            timeout: 60000
-        });
-
-        const analysisId = uploadResponse.data?.data?.id;
-        if (!analysisId) throw new Error('No se obtuvo ID de análisis de VirusTotal');
-
-        console.log(`Archivo subido. ID de análisis: ${analysisId}`);
-        await new Promise(resolve => setTimeout(resolve, 30000));
-
-        const reportResponse = await axios.get(`https://www.virustotal.com/api/v3/analyses/${analysisId}`, {
-            headers: { 'x-apikey': VIRUSTOTAL_API_KEY },
-            timeout: 30000
-        });
-
-        const report = reportResponse.data;
-        if (!report?.data?.attributes?.stats) throw new Error('Estructura de respuesta de VirusTotal inválida');
-
-        const { stats } = report.data.attributes;
-        const sha256 = report.data.attributes.sha256 || '';
-        const totalEngines = Object.values(stats).reduce((sum, val) => sum + (val || 0), 0);
-        const malicious = stats.malicious || 0;
-
-        return {
-            malicious,
-            totalEngines,
-            stats,
-            permalink: sha256 ? `https://www.virustotal.com/gui/file/${sha256}/detection` : 'Enlace no disponible'
-        };
-    } catch (error) {
-        if (axios.isAxiosError(error)) {
-            console.error('Error de Axios en scanFile:', error.response?.status, error.response?.data || error.message);
-            throw new Error(`Fallo en el análisis de VirusTotal: ${error.response?.data?.error?.message || error.message}`);
-        }
-        console.error('Error general en scanFile:', error.message);
-        throw new Error(`Fallo en el análisis: ${error.message}`);
-    } finally {
-        try {
-            if (filePath && fs.existsSync(filePath)) {
-                fs.unlinkSync(filePath);
-                console.log(`Archivo temporal ${path.basename(filePath)} eliminado.`);
-            }
-        } catch (e) {
-            console.error('Error eliminando archivo temporal:', e);
-        }
-    }
-}
-
 // Evento para procesar mensajes
 client.on('message', async msg => {
     try {
         const hasActivationWord = ACTIVATION_WORDS.some(word => msg.body.toLowerCase().includes(word.toLowerCase()));
         if (!msg.hasMedia || !hasActivationWord) return;
 
-        await msg.reply('🔍 Analizando archivo... Por favor, espera.');
+        await msg.reply('🔍 Analizando archivo... Por favor, espera. Esto puede tardar varios minutos.');
         
         const media = await msg.downloadMedia();
         if (!media || !media.data) {
