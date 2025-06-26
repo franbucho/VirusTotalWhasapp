@@ -1,77 +1,177 @@
+require('dotenv').config();
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const axios = require('axios');
 const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
+const express = require('express');
 
 // Configuración
-const VIRUSTOTAL_API_KEY = '2063838b3b3f8b6fe796203c289b68621b849db1bfdb525b5389249e4c9db469';
+const app = express();
+const PORT = process.env.PORT || 3000;
+const VIRUSTOTAL_API_KEY = process.env.VT_API_KEY || 'tu-api-key'; // Usa variables de entorno
 const MAX_FILE_SIZE_MB = 32;
 const ACTIVATION_WORDS = ['revisar', 'scan', 'analizar', 'check', 'review', 'escanear'];
 
-// Inicializar cliente de WhatsApp
+// Inicializar WhatsApp Client
 const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: { 
+    authStrategy: new LocalAuth({
+        dataPath: path.join(__dirname, 'session_data') // Guarda sesiones persistentes
+    }),
+    puppeteer: {
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage'
+        ]
     }
 });
 
-// Función para escanear archivos (se mantiene igual)
+// Servidor web para health checks
+app.get('/', (req, res) => {
+    res.status(200).json({
+        status: 'online',
+        service: 'WhatsApp VirusTotal Bot',
+        uptime: process.uptime()
+    });
+});
+
+app.listen(PORT, () => {
+    console.log(`Servidor health check en puerto ${PORT}`);
+});
+
+// Función para escanear archivos con VirusTotal
 async function scanFile(filePath) {
-    // ... (código existente de scanFile)
+    try {
+        // Validación del archivo
+        if (!fs.existsSync(filePath)) throw new Error('Archivo temporal no existe');
+        
+        const stats = fs.statSync(filePath);
+        const fileSizeMB = stats.size / (1024 * 1024);
+        if (fileSizeMB > MAX_FILE_SIZE_MB) throw new Error(`Archivo demasiado grande (${fileSizeMB.toFixed(2)}MB)`);
+
+        // Subir a VirusTotal
+        const formData = new FormData();
+        formData.append('file', fs.createReadStream(filePath));
+
+        const uploadResponse = await axios.post(
+            'https://www.virustotal.com/api/v3/files',
+            formData,
+            {
+                headers: {
+                    'x-apikey': VIRUSTOTAL_API_KEY,
+                    ...formData.getHeaders()
+                },
+                timeout: 60000
+            }
+        );
+
+        const analysisId = uploadResponse.data?.data?.id;
+        if (!analysisId) throw new Error('No se obtuvo ID de análisis');
+
+        console.log(`Archivo subido. ID: ${analysisId}`);
+        await new Promise(resolve => setTimeout(resolve, 30000)); // Espera 30 segundos
+
+        // Obtener resultados
+        const reportResponse = await axios.get(
+            `https://www.virustotal.com/api/v3/analyses/${analysisId}`,
+            {
+                headers: { 'x-apikey': VIRUSTOTAL_API_KEY },
+                timeout: 30000
+            }
+        );
+
+        const report = reportResponse.data;
+        if (!report?.data?.attributes?.stats) {
+            throw new Error('Estructura de respuesta inválida');
+        }
+
+        const { stats } = report.data.attributes;
+        const totalEngines = Object.values(stats).reduce((sum, val) => sum + (val || 0), 0);
+        const malicious = stats.malicious || 0;
+        const sha256 = report.data.attributes.sha256 || '';
+
+        return {
+            malicious,
+            totalEngines,
+            stats,
+            permalink: sha256 ? `https://www.virustotal.com/gui/file/${sha256}/detection` : 'No disponible'
+        };
+    } catch (error) {
+        console.error('Error en scanFile:', error.message);
+        throw new Error(`Fallo en el análisis: ${error.message}`);
+    } finally {
+        try {
+            if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        } catch (e) {
+            console.error('Error eliminando archivo temporal:', e);
+        }
+    }
 }
 
+// Eventos de WhatsApp
 client.on('qr', qr => {
     qrcode.generate(qr, { small: true });
 });
 
+client.on('authenticated', () => {
+    console.log('Autenticación exitosa ✅');
+});
+
 client.on('ready', () => {
-    console.log('Client is ready!');
+    console.log('Bot listo 🚀');
+});
+
+client.on('disconnected', (reason) => {
+    console.log('Desconectado:', reason);
+    console.log('Reiniciando...');
+    client.initialize();
 });
 
 client.on('message', async msg => {
-    // Verificar si el mensaje contiene palabra clave
-    const hasActivationWord = ACTIVATION_WORDS.some(word => 
-        msg.body.toLowerCase().includes(word.toLowerCase())
-    );
+    try {
+        const hasActivationWord = ACTIVATION_WORDS.some(word => 
+            msg.body.toLowerCase().includes(word.toLowerCase())
+        );
 
-    // Solo responder si tiene archivo Y palabra clave
-    if (msg.hasMedia && hasActivationWord) {
-        try {
-            await msg.reply('🔍 Analizando archivo, por favor espera...');
-            
-            const media = await msg.downloadMedia();
-            const filePath = path.join(__dirname, 'temp_files', `${Date.now()}_${msg.id.id}.tmp`);
-            
-            if (!fs.existsSync(path.dirname(filePath))) {
-                fs.mkdirSync(path.dirname(filePath), { recursive: true });
-            }
-            
-            fs.writeFileSync(filePath, Buffer.from(media.data, 'base64'));
-            
-            const result = await scanFile(filePath);
-            
-            let response = `*Resultados del análisis:*\n`;
-            response += `🛡️ Motores de antivirus: ${result.totalEngines}\n`;
-            response += `☠️ Detectado como malicioso por: ${result.malicious} motores\n\n`;
-            response += `📊 Estadísticas:\n`;
-            response += `✅ No detectado: ${result.stats.undetected || 0}\n`;
-            response += `⚠️ Sospechoso: ${result.stats.suspicious || 0}\n`;
-            response += `❌ Malicioso: ${result.stats.malicious || 0}\n\n`;
-            response += `🔗 Enlace al análisis completo: ${result.permalink}`;
-            
-            await msg.reply(response);
-            
-            fs.unlinkSync(filePath);
-        } catch (error) {
-            console.error('Error al procesar el archivo:', error);
-            await msg.reply(`❌ Error al analizar el archivo: ${error.message}`);
+        if (!msg.hasMedia || !hasActivationWord) return;
+
+        await msg.reply('🔍 Analizando archivo...');
+        const media = await msg.downloadMedia();
+        const filePath = path.join(__dirname, 'temp', `${Date.now()}_${msg.id.id}.tmp`);
+
+        // Asegurar directorio temporal
+        if (!fs.existsSync(path.dirname(filePath))) {
+            fs.mkdirSync(path.dirname(filePath), { recursive: true });
         }
+        fs.writeFileSync(filePath, Buffer.from(media.data, 'base64'));
+
+        const result = await scanFile(filePath);
+        const response = [
+            '📊 *Resultados del análisis*',
+            `• Motores totales: ${result.totalEngines}`,
+            `• Detectado como malicioso: ${result.malicious}`,
+            `• Enlace completo: ${result.permalink}`,
+            '_Powered by VirusTotal_'
+        ].join('\n');
+
+        await msg.reply(response);
+    } catch (error) {
+        console.error('Error procesando mensaje:', error);
+        await msg.reply(`❌ Error: ${error.message}`);
     }
-    // No hacer nada en otros casos (mensajes sin palabras clave)
 });
 
+// Iniciar
 client.initialize();
+
+// Manejo de errores globales
+process.on('unhandledRejection', (err) => {
+    console.error('Unhandled Rejection:', err);
+});
+
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err);
+});
