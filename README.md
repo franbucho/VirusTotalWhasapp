@@ -72,4 +72,4 @@ Las contribuciones son bienvenidas. Por favor abre un issue o pull request.
 
 ---
 
-Hecho con ❤️ por [Tu Nombre] | Usa responsablemente
+Hecho con ❤️ por Francisco Villahermosa | Usa responsablemente
